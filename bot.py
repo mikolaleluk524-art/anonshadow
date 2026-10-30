@@ -340,6 +340,13 @@ async def find(m: Message, state: FSMContext):
         await m.answer("Знайдено! Пиши.", reply_markup=stop_kb)
         await bot.send_message(partner, "Знайдено! Пиши.", reply_markup=stop_kb)
         await state.set_state(InChat.active)
+        # форсуємо стан і для партнера
+        try:
+            from aiogram.fsm.storage.base import StorageKey
+            partner_state = FSMContext(storage=dp.storage, key=StorageKey(bot_id=bot.id, chat_id=partner, user_id=partner))
+            await partner_state.set_state(InChat.active)
+        except Exception as e:
+            logger.warning(f"Could not set partner state: {e}")
     else:
         queue.add(uid)
         await m.answer("Шукаю...", reply_markup=cancel_kb)
@@ -427,3 +434,10 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+@router.message(Command("debug"))
+async def debug(m: Message):
+    u = await get_user(m.from_user.id)
+    if not u:
+        return await m.answer("Немає профілю")
+    await m.answer(f"in_chat_with: {u['in_chat_with']}\\nbanned: {u['banned']}")
