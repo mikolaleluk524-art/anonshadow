@@ -153,7 +153,7 @@ class InChat(StatesGroup):
 gender_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловік"), KeyboardButton(text="Жінка")], [KeyboardButton(text="Інше")]], resize_keyboard=True)
 looking_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловіка"), KeyboardButton(text="Жінку")], [KeyboardButton(text="Будь-кого")]], resize_keyboard=True)
 main_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🔍 Знайти співрозмовника")],
+    [KeyboardButton(text="🚀 Старт"), KeyboardButton(text="🔍 Знайти співрозмовника")],
     [KeyboardButton(text="👤 Профіль"), KeyboardButton(text="🔗 Рефералка")],
     [KeyboardButton(text="⭐ Фільтр 1 день (50)"), KeyboardButton(text="⭐ Фільтр 7 днів (250)")],
     [KeyboardButton(text="❌ Закінчити чат")]
@@ -287,6 +287,10 @@ async def paid(m: Message):
     days = 7 if "week_" in payload else 1
     await set_filter(m.from_user.id, days)
     await m.answer(f"Фільтр активовано на {days} дн.", reply_markup=main_kb)
+
+@router.message(F.text == "🚀 Старт")
+async def start_btn(m: Message, state: FSMContext):
+    await start(m, state, type("obj", (), {"args": None})())
 
 @router.message(F.text == "🔍 Знайти співрозмовника")
 async def find(m: Message, state: FSMContext):
