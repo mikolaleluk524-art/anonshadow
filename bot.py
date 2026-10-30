@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart, CommandObject
@@ -10,15 +11,13 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-    LabeledPrice, PreCheckoutQuery
+    LabeledPrice, PreCheckoutQuery, BotCommand
 )
 import aiosqlite
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не знайдено в змінних середовища")
-
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+    raise ValueError("BOT_TOKEN не знайдено")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,7 +30,8 @@ DB_PATH = "anon_chat.db"
 queue = set()
 PRICE_DAY = 50
 PRICE_WEEK = 250
-FREE_SEARCHES_PER_DAY = 999999
+
+LINK_RE = re.compile(r"https?://|t\.me/|telegram\.me/", re.I)
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -49,13 +49,16 @@ async def init_db():
                 referred_by INTEGER DEFAULT 0,
                 referrals_count INTEGER DEFAULT 0,
                 free_searches INTEGER DEFAULT 0,
-                daily_searches INTEGER DEFAULT 0,
-                last_search_date TEXT,
                 filter_until TEXT,
                 banned INTEGER DEFAULT 0,
-                reports INTEGER DEFAULT 0
+                reports INTEGER DEFAULT 0,
+                age_confirmed INTEGER DEFAULT 0
             )
         """)
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN age_confirmed INTEGER DEFAULT 0")
+        except:
+            pass
         await db.commit()
 
 async def get_user(user_id: int):
@@ -67,6 +70,11 @@ async def get_user(user_id: int):
 async def is_banned(user_id: int) -> bool:
     u = await get_user(user_id)
     return bool(u and u["banned"] == 1)
+
+async def confirm_age(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET age_confirmed = 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
 
 async def add_report(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -81,8 +89,8 @@ async def add_report(user_id: int):
 async def save_user(user_id, gender, looking_for, bio, referred_by=0):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT OR REPLACE INTO users (user_id, gender, looking_for, bio, referred_by)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO users (user_id, gender, looking_for, bio, referred_by, age_confirmed)
+            VALUES (?, ?, ?, ?, ?, 1)
         """, (user_id, gender, looking_for, bio, referred_by))
         await db.commit()
 
@@ -104,22 +112,10 @@ async def add_referral(referrer_id):
             WHERE user_id = ?
         """, (referrer_id,))
         await db.commit()
-        async with db.execute("SELECT referrals_count, free_searches FROM users WHERE user_id = ?", (referrer_id,)) as c:
-            return await c.fetchone()
 
 async def use_free_search(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET free_searches = MAX(COALESCE(free_searches,0) - 1, 0) WHERE user_id = ?", (user_id,))
-        await db.commit()
-
-async def increment_daily(user_id):
-    today = datetime.utcnow().date().isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
-        u = await get_user(user_id)
-        if not u or u["last_search_date"] != today:
-            await db.execute("UPDATE users SET daily_searches = 1, last_search_date = ? WHERE user_id = ?", (today, user_id))
-        else:
-            await db.execute("UPDATE users SET daily_searches = COALESCE(daily_searches,0) + 1 WHERE user_id = ?", (user_id,))
         await db.commit()
 
 def has_active_filter(user) -> bool:
@@ -138,10 +134,11 @@ async def set_partner(user_id, partner_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET in_chat_with = ?, is_searching = 0 WHERE user_id = ?", (partner_id, user_id))
         await db.commit()
-    logger.info(f"Set partner: {user_id} -> {partner_id}")
 
 async def clear_partner(user_id):
-    await update_extra(user_id, in_chat_with=0, is_searching=0)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET in_chat_with = 0, is_searching = 0 WHERE user_id = ?", (user_id,))
+        await db.commit()
 
 class Profile(StatesGroup):
     gender = State()
@@ -156,40 +153,60 @@ class InChat(StatesGroup):
 gender_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловік"), KeyboardButton(text="Жінка")], [KeyboardButton(text="Інше")]], resize_keyboard=True)
 looking_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловіка"), KeyboardButton(text="Жінку")], [KeyboardButton(text="Будь-кого")]], resize_keyboard=True)
 main_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🚀 Старт"), KeyboardButton(text="🔍 Знайти співрозмовника")],
+    [KeyboardButton(text="🚀 Старт"), KeyboardButton(text="🔍 Знайти")],
     [KeyboardButton(text="👤 Профіль"), KeyboardButton(text="🔗 Рефералка")],
-    [KeyboardButton(text="⭐ Фільтр 1 день (50)"), KeyboardButton(text="⭐ Фільтр 7 днів (250)")],
-    [KeyboardButton(text="❌ Закінчити чат")]
+    [KeyboardButton(text="⭐ Фільтр 1 день"), KeyboardButton(text="⭐ Фільтр 7 днів")],
+    [KeyboardButton(text="❌ Стоп")]
 ], resize_keyboard=True)
-stop_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Закінчити чат"), KeyboardButton(text="⚠️ Поскаржитись")]], resize_keyboard=True)
-cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Скасувати пошук")]], resize_keyboard=True)
+stop_kb = ReplyKeyboardMarkup(keyboard=[
+    [KeyboardButton(text="❌ Стоп"), KeyboardButton(text="⚠️ Скарга"), KeyboardButton(text="🚫 Заблокувати")]
+], resize_keyboard=True)
+cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Скасувати")]], resize_keyboard=True)
 
 def is_opposite(a, b):
     return (a == "Чоловік" and b == "Жінка") or (a == "Жінка" and b == "Чоловік")
 
+WELCOME = (
+    "Анонімний чат 18+\n\n"
+    "Знайди співрозмовника за кілька секунд.\n"
+    "Без реєстрації. Без збереження історії.\n"
+    "Повна анонімність.\n\n"
+    "/start — почати\n"
+    "/next — наступний\n"
+    "/stop — зупинити\n"
+    "/help — допомога"
+)
+
 @router.message(CommandStart())
-async def start(message: Message, state: FSMContext, command: CommandObject):
+async def start(message: Message, state: FSMContext, command: CommandObject = None):
     if await is_banned(message.from_user.id):
         return await message.answer("Ти заблокований.")
     await state.clear()
-    referred_by = int(command.args) if command.args and command.args.isdigit() else 0
-    user = await get_user(message.from_user.id)
+    referred_by = 0
+    if command and command.args and command.args.isdigit():
+        referred_by = int(command.args)
 
-    if not user:
-        await message.answer(
-            "AnonShadow — анонімний чат 18+\n\nПідтверди вік:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="Мені є 18+", callback_data="age18")
-            ]])
-        )
+    user = await get_user(message.from_user.id)
+    if not user or not user["age_confirmed"]:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Мені є 18+", callback_data="age18"),
+            InlineKeyboardButton(text="Мені немає 18", callback_data="age_no")
+        ]])
+        await message.answer(WELCOME + "\n\nПідтверди вік:", reply_markup=kb)
         await state.update_data(referred_by=referred_by)
     else:
         await message.answer("З поверненням.", reply_markup=main_kb)
 
+@router.callback_query(F.data == "age_no")
+async def age_no(cb: CallbackQuery):
+    await cb.message.edit_text("Вибач, бот тільки для 18+.")
+    await cb.answer()
+
 @router.callback_query(F.data == "age18")
 async def age_ok(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("Ок. Твоя стать?")
-    await cb.message.answer("Обери:", reply_markup=gender_kb)
+    await confirm_age(cb.from_user.id)
+    await cb.message.edit_text("Вік підтверджено.")
+    await cb.message.answer("Твоя стать?", reply_markup=gender_kb)
     await state.set_state(Profile.gender)
     await cb.answer()
 
@@ -220,7 +237,7 @@ async def set_age(m: Message, state: FSMContext):
 @router.message(Profile.city)
 async def set_city(m: Message, state: FSMContext):
     await state.update_data(city="" if m.text == "-" else m.text)
-    await m.answer("Опис / фетіші (або '-'):")
+    await m.answer("Короткий опис (або '-'):")
     await state.set_state(Profile.bio)
 
 @router.message(Profile.bio)
@@ -231,89 +248,45 @@ async def set_bio(m: Message, state: FSMContext):
     await save_user(m.from_user.id, data["gender"], data["looking"], bio, referred_by)
     await update_extra(m.from_user.id, age=data.get("age"), city=data.get("city"))
     if referred_by and referred_by != m.from_user.id:
+        await add_referral(referred_by)
         try:
-            refs, free = await add_referral(referred_by)
-            await bot.send_message(referred_by, f"Новий реферал! Всього: {refs}, безкоштовних: {free}")
+            await bot.send_message(referred_by, "Новий реферал! +1 безкоштовний пошук")
         except:
             pass
     await state.clear()
-    await m.answer("Профіль готовий.", reply_markup=main_kb)
+    await m.answer("Готово. Можеш шукати.", reply_markup=main_kb)
 
-@router.message(F.text == "👤 Профіль")
-async def profile(m: Message):
-    u = await get_user(m.from_user.id)
-    if not u:
-        return await m.answer("/start")
-    active = "активний" if has_active_filter(u) else "немає"
-    text = (f"Стать: {u['gender']}\nШукаю: {u['looking_for']}\nВік: {u['age'] or '—'}\n"
-            f"Місто: {u['city'] or '—'}\nОпис: {u['bio'] or '—'}\n"
-            f"Фільтр: {active}\nРефералів: {u['referrals_count'] or 0}\n"
-            f"Безкоштовних пошуків: {u['free_searches'] or 0}")
-    await m.answer(text, reply_markup=main_kb)
-
-@router.message(F.photo)
-async def set_photo(m: Message):
-    u = await get_user(m.from_user.id)
-    if u:
-        await update_extra(m.from_user.id, photo_id=m.photo[-1].file_id)
-        await m.answer("Фото оновлено.", reply_markup=main_kb)
-
-@router.message(F.text == "🔗 Рефералка")
-async def ref(m: Message):
-    me = await bot.get_me()
-    link = f"https://t.me/{me.username}?start={m.from_user.id}"
-    u = await get_user(m.from_user.id)
+@router.message(Command("help"))
+async def help_cmd(m: Message):
     await m.answer(
-        f"Посилання:\n{link}\n\n"
-        f"Рефералів: {u['referrals_count'] if u else 0}\n"
-        f"Безкоштовних пошуків: {u['free_searches'] if u else 0}",
-        reply_markup=main_kb
+        "/start — почати\n"
+        "/next — шукати / наступний\n"
+        "/stop — закінчити чат\n"
+        "/report — скарга\n"
+        "/help — ця допомога\n\n"
+        "Кнопки внизу роблять те саме."
     )
 
-@router.message(F.text == "⭐ Фільтр 1 день (50)")
-async def buy_day(m: Message):
-    await bot.send_invoice(m.chat.id, "Фільтр 1 день", "24 години пошуку протилежної статі",
-                           f"day_{m.from_user.id}", "", "XTR", [LabeledPrice("1 день", PRICE_DAY)])
-
-@router.message(F.text == "⭐ Фільтр 7 днів (250)")
-async def buy_week(m: Message):
-    await bot.send_invoice(m.chat.id, "Фільтр 7 днів", "Тиждень пошуку протилежної статі",
-                           f"week_{m.from_user.id}", "", "XTR", [LabeledPrice("7 днів", PRICE_WEEK)])
-
-@router.pre_checkout_query()
-async def pre(q: PreCheckoutQuery):
-    await q.answer(ok=True)
-
-@router.message(F.successful_payment)
-async def paid(m: Message):
-    payload = m.successful_payment.invoice_payload
-    days = 7 if "week_" in payload else 1
-    await set_filter(m.from_user.id, days)
-    await m.answer(f"Фільтр активовано на {days} дн.", reply_markup=main_kb)
-
-@router.message(F.text == "🚀 Старт")
+@router.message(F.text.in_({"🚀 Старт", "/start"}))
 async def start_btn(m: Message, state: FSMContext):
-    await start(m, state, type("obj", (), {"args": None})())
+    await start(m, state)
 
-@router.message(F.text == "🔍 Знайти співрозмовника")
+@router.message(Command("next"))
+@router.message(F.text == "🔍 Знайти")
 async def find(m: Message, state: FSMContext):
     if await is_banned(m.from_user.id):
         return await m.answer("Заблоковано.")
     uid = m.from_user.id
     user = await get_user(uid)
-    if not user or user["in_chat_with"]:
-        return await m.answer("Спочатку /start або закінчи чат.")
+    if not user:
+        return await m.answer("Спочатку /start")
+    if user["in_chat_with"]:
+        return await m.answer("Ти вже в чаті. Спочатку /stop")
 
-    today = datetime.utcnow().date().isoformat()
-    daily = user["daily_searches"] or 0 if user["last_search_date"] == today else 0
-    can_free = True  # необмежено
     can_opp = has_active_filter(user) or (user["free_searches"] or 0) > 0
-
-    if False and not can_opp:  # рандом завжди доступний
-        return await m.answer("Ліміт безкоштовних пошуків вичерпано. Купи фільтр або запроси друзів.", reply_markup=main_kb)
-
     partner = None
     used_free = False
+
     for pid in list(queue):
         if pid == uid:
             continue
@@ -325,14 +298,13 @@ async def find(m: Message, state: FSMContext):
             if not has_active_filter(user):
                 used_free = True
             break
-        elif can_free:
+        else:
             partner = pid
             break
 
     if partner:
         if used_free:
             await use_free_search(uid)
-        await increment_daily(uid)
         queue.discard(partner)
         queue.discard(uid)
         await set_partner(uid, partner)
@@ -340,27 +312,22 @@ async def find(m: Message, state: FSMContext):
         await m.answer("Знайдено! Пиши.", reply_markup=stop_kb)
         await bot.send_message(partner, "Знайдено! Пиши.", reply_markup=stop_kb)
         await state.set_state(InChat.active)
-        # форсуємо стан і для партнера
-        try:
-            from aiogram.fsm.storage.base import StorageKey
-            partner_state = FSMContext(storage=dp.storage, key=StorageKey(bot_id=bot.id, chat_id=partner, user_id=partner))
-            await partner_state.set_state(InChat.active)
-        except Exception as e:
-            logger.warning(f"Could not set partner state: {e}")
     else:
         queue.add(uid)
         await m.answer("Шукаю...", reply_markup=cancel_kb)
 
-@router.message(F.text == "❌ Скасувати пошук")
+@router.message(F.text == "❌ Скасувати")
 async def cancel(m: Message):
     queue.discard(m.from_user.id)
     await m.answer("Скасовано.", reply_markup=main_kb)
 
-@router.message(F.text == "❌ Закінчити чат")
+@router.message(Command("stop"))
+@router.message(F.text == "❌ Стоп")
 async def end(m: Message, state: FSMContext):
     user = await get_user(m.from_user.id)
     if not user or not user["in_chat_with"]:
-        return await m.answer("Не в чаті.", reply_markup=main_kb)
+        queue.discard(m.from_user.id)
+        return await m.answer("Ти не в чаті.", reply_markup=main_kb)
     partner = user["in_chat_with"]
     await clear_partner(m.from_user.id)
     await clear_partner(partner)
@@ -371,36 +338,99 @@ async def end(m: Message, state: FSMContext):
         pass
     await state.clear()
 
-@router.message(F.text == "⚠️ Поскаржитись")
+@router.message(Command("report"))
+@router.message(F.text == "⚠️ Скарга")
 async def report(m: Message):
     user = await get_user(m.from_user.id)
     if not user or not user["in_chat_with"]:
-        return
+        return await m.answer("Немає активного чату.")
     partner = user["in_chat_with"]
     r = await add_report(partner)
-    await m.answer(f"Скаргу надіслано ({r})")
+    await m.answer(f"Скаргу надіслано ({r}/3)")
     if r >= 3:
         await clear_partner(partner)
+        try:
+            await bot.send_message(partner, "Тебе заблоковано через скарги.")
+        except:
+            pass
+
+@router.message(F.text == "🚫 Заблокувати")
+async def block(m: Message, state: FSMContext):
+    user = await get_user(m.from_user.id)
+    if not user or not user["in_chat_with"]:
+        return await m.answer("Немає активного чату.")
+    partner = user["in_chat_with"]
+    await add_report(partner)
+    await clear_partner(m.from_user.id)
+    await clear_partner(partner)
+    await m.answer("Заблоковано. Чат закінчено.", reply_markup=main_kb)
+    try:
+        await bot.send_message(partner, "Співрозмовник тебе заблокував.", reply_markup=main_kb)
+    except:
+        pass
+    await state.clear()
+
+@router.message(F.text == "👤 Профіль")
+async def profile(m: Message):
+    u = await get_user(m.from_user.id)
+    if not u:
+        return await m.answer("/start")
+    active = "активний" if has_active_filter(u) else "немає"
+    await m.answer(
+        f"Стать: {u['gender']}\nШукаю: {u['looking_for']}\nВік: {u['age'] or '—'}\n"
+        f"Місто: {u['city'] or '—'}\nОпис: {u['bio'] or '—'}\n"
+        f"Фільтр: {active}\nРефералів: {u['referrals_count'] or 0}\n"
+        f"Безкоштовних пошуків: {u['free_searches'] or 0}",
+        reply_markup=main_kb
+    )
+
+@router.message(F.text == "🔗 Рефералка")
+async def ref(m: Message):
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start={m.from_user.id}"
+    u = await get_user(m.from_user.id)
+    await m.answer(
+        f"Посилання:\n{link}\n\nРефералів: {u['referrals_count'] if u else 0}\n"
+        f"Кожен реферал = +1 безкоштовний пошук по фільтру.",
+        reply_markup=main_kb
+    )
+
+@router.message(F.text == "⭐ Фільтр 1 день")
+async def buy_day(m: Message):
+    await bot.send_invoice(m.chat.id, "Фільтр 1 день", "24 години", f"day_{m.from_user.id}", "", "XTR", [LabeledPrice("1 день", PRICE_DAY)])
+
+@router.message(F.text == "⭐ Фільтр 7 днів")
+async def buy_week(m: Message):
+    await bot.send_invoice(m.chat.id, "Фільтр 7 днів", "Тиждень", f"week_{m.from_user.id}", "", "XTR", [LabeledPrice("7 днів", PRICE_WEEK)])
+
+@router.pre_checkout_query()
+async def pre(q: PreCheckoutQuery):
+    await q.answer(ok=True)
+
+@router.message(F.successful_payment)
+async def paid(m: Message):
+    days = 7 if "week_" in m.successful_payment.invoice_payload else 1
+    await set_filter(m.from_user.id, days)
+    await m.answer(f"Фільтр на {days} дн. активовано.", reply_markup=main_kb)
 
 @router.message()
 async def relay(m: Message, state: FSMContext):
-    uid = m.from_user.id
-    # skip menu buttons and commands
     if m.text and (m.text.startswith("/") or m.text in [
-        "🚀 Старт", "🔍 Знайти співрозмовника", "👤 Профіль", "🔗 Рефералка",
-        "⭐ Фільтр 1 день (50)", "⭐ Фільтр 7 днів (250)", "❌ Закінчити чат",
-        "❌ Скасувати пошук", "⚠️ Поскаржитись"
+        "🚀 Старт", "🔍 Знайти", "👤 Профіль", "🔗 Рефералка",
+        "⭐ Фільтр 1 день", "⭐ Фільтр 7 днів", "❌ Стоп", "❌ Скасувати",
+        "⚠️ Скарга", "🚫 Заблокувати"
     ]):
         return
 
-    user = await get_user(uid)
-    if not user:
-        return
-    partner = user["in_chat_with"]
-    if not partner:
+    user = await get_user(m.from_user.id)
+    if not user or not user["in_chat_with"]:
         return
 
-    logger.info(f"Relaying from {uid} to {partner}: {m.content_type}")
+    # простий фільтр посилань
+    if m.text and LINK_RE.search(m.text):
+        return await m.answer("Посилання заборонені.")
+
+    partner = user["in_chat_with"]
     try:
         if m.text:
             await bot.send_message(partner, m.text)
@@ -416,28 +446,25 @@ async def relay(m: Message, state: FSMContext):
             await bot.send_sticker(partner, m.sticker.file_id)
         elif m.document:
             await bot.send_document(partner, m.document.file_id, caption=m.caption)
-        elif m.animation:
-            await bot.send_animation(partner, m.animation.file_id, caption=m.caption)
-        else:
-            await m.answer("Цей тип повідомлення поки не підтримується.")
-        logger.info(f"Delivered to {partner}")
     except Exception as e:
-        logger.error(f"Relay failed {uid}->{partner}: {e}")
-        await m.answer("Не вдалося доставити. Спробуй ще раз або закінчи чат.")
+        logger.error(f"Relay error: {e}")
+        await m.answer("Не доставлено.")
 
+async def set_commands():
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Почати"),
+        BotCommand(command="next", description="Шукати / наступний"),
+        BotCommand(command="stop", description="Зупинити чат"),
+        BotCommand(command="report", description="Скарга"),
+        BotCommand(command="help", description="Допомога"),
+    ])
 
 async def main():
     await init_db()
+    await set_commands()
     dp.include_router(router)
     logger.info("Бот запущено")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-@router.message(Command("debug"))
-async def debug(m: Message):
-    u = await get_user(m.from_user.id)
-    if not u:
-        return await m.answer("Немає профілю")
-    await m.answer(f"in_chat_with: {u['in_chat_with']}\\nbanned: {u['banned']}")
