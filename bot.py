@@ -135,7 +135,10 @@ async def set_filter(user_id, days=1):
     await update_extra(user_id, filter_until=until)
 
 async def set_partner(user_id, partner_id):
-    await update_extra(user_id, in_chat_with=partner_id, is_searching=0)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET in_chat_with = ?, is_searching = 0 WHERE user_id = ?", (partner_id, user_id))
+        await db.commit()
+    logger.info(f"Set partner: {user_id} -> {partner_id}")
 
 async def clear_partner(user_id):
     await update_extra(user_id, in_chat_with=0, is_searching=0)
@@ -374,13 +377,23 @@ async def report(m: Message):
 
 @router.message()
 async def relay(m: Message, state: FSMContext):
-    # ігноруємо команди і кнопки меню
-    if m.text and m.text.startswith(("/", "🚀", "🔍", "👤", "🔗", "⭐", "❌", "⚠️")):
+    uid = m.from_user.id
+    # skip menu buttons and commands
+    if m.text and (m.text.startswith("/") or m.text in [
+        "🚀 Старт", "🔍 Знайти співрозмовника", "👤 Профіль", "🔗 Рефералка",
+        "⭐ Фільтр 1 день (50)", "⭐ Фільтр 7 днів (250)", "❌ Закінчити чат",
+        "❌ Скасувати пошук", "⚠️ Поскаржитись"
+    ]):
         return
-    user = await get_user(m.from_user.id)
-    if not user or not user["in_chat_with"]:
+
+    user = await get_user(uid)
+    if not user:
         return
     partner = user["in_chat_with"]
+    if not partner:
+        return
+
+    logger.info(f"Relaying from {uid} to {partner}: {m.content_type}")
     try:
         if m.text:
             await bot.send_message(partner, m.text)
@@ -396,11 +409,15 @@ async def relay(m: Message, state: FSMContext):
             await bot.send_sticker(partner, m.sticker.file_id)
         elif m.document:
             await bot.send_document(partner, m.document.file_id, caption=m.caption)
+        elif m.animation:
+            await bot.send_animation(partner, m.animation.file_id, caption=m.caption)
         else:
             await m.answer("Цей тип повідомлення поки не підтримується.")
+        logger.info(f"Delivered to {partner}")
     except Exception as e:
-        logger.error(f"Relay error: {e}")
-        await m.answer("Не вдалося доставити повідомлення.")
+        logger.error(f"Relay failed {uid}->{partner}: {e}")
+        await m.answer("Не вдалося доставити. Спробуй ще раз або закінчи чат.")
+
 
 async def main():
     await init_db()
