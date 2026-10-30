@@ -153,11 +153,11 @@ gender_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловік")
 looking_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловіка"), KeyboardButton(text="Жінку")], [KeyboardButton(text="Будь-кого")]], resize_keyboard=True)
 
 main_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🔍 Пошук"), KeyboardButton(text="🧭 Фільтри пошуку")],
-    [KeyboardButton(text="❤️ Флірт пошук"), KeyboardButton(text="👤 Онлайн")],
-    [KeyboardButton(text="📚 Пошук за інтересами")],
+    [KeyboardButton(text="🔍 Пошук"), KeyboardButton(text="🧭 Фільтри")],
+    [KeyboardButton(text="❤️ Флірт"), KeyboardButton(text="👤 Онлайн")],
+    [KeyboardButton(text="📚 Інтереси")],
     [KeyboardButton(text="👑 Premium"), KeyboardButton(text="📣 Реферал")],
-    [KeyboardButton(text="⚙️ Додатково"), KeyboardButton(text="❌ Стоп")]
+    [KeyboardButton(text="⚙️ Меню"), KeyboardButton(text="❌ Стоп")]
 ], resize_keyboard=True)
 
 stop_kb = ReplyKeyboardMarkup(keyboard=[
@@ -171,10 +171,10 @@ def is_opposite(a, b):
 
 WELCOME = (
     "Анонімний чат 18+\n\n"
-    "🎲 Рандом — безкоштовно\n"
-    "🎯 Пошук за фільтрами (стать + місто) — платно\n\n"
-    "/start — почати\n"
-    "/next — рандом\n"
+    "🔍 Пошук — рандом (безкоштовно)\n"
+    "🧭 Фільтри / ❤️ Флірт — платні\n\n"
+    "/search — пошук\n"
+    "/sflirt — флірт\n"
     "/stop — зупинити"
 )
 
@@ -257,22 +257,23 @@ async def set_bio(m: Message, state: FSMContext):
 async def help_cmd(m: Message):
     await m.answer("🎲 Рандом — безкоштовно\n🎯 Фільтри (стать+місто) — платно\n/stop — закінчити")
 
-# --- Рандом (безкоштовно) ---
-@router.message(Command("next"))
-@router.message(F.text.in_({"🎲 Рандом", "🔍 Пошук"}))
+# --- Рандом / звичайний пошук (безкоштовно) ---
+@router.message(Command("search", "next"))
+@router.message(F.text.in_({"🔍 Пошук", "👤 Онлайн"}))
 async def find_random(m: Message, state: FSMContext):
     await do_search(m, state, use_filter=False)
 
-# --- Пошук за фільтрами (платно) ---
-@router.message(F.text.in_({"🎯 Пошук за фільтрами", "🧭 Фільтри пошуку", "❤️ Флірт пошук"}))
+# --- Фільтри / флірт (платно) ---
+@router.message(Command("sflirt", "sinterests"))
+@router.message(F.text.in_({"🧭 Фільтри", "❤️ Флірт", "📚 Інтереси"}))
 async def find_filter(m: Message, state: FSMContext):
     user = await get_user(m.from_user.id)
     if not user:
         return await m.answer("/start")
     if not has_active_filter(user) and (user["free_searches"] or 0) <= 0:
         return await m.answer(
-            "Пошук за фільтрами (стать + місто) платний.\n"
-            "Купи доступ або запроси друзів.",
+            "Пошук за фільтрами / флірт платний.\n"
+            "Купи Premium або запроси друзів.",
             reply_markup=main_kb
         )
     await do_search(m, state, use_filter=True)
@@ -405,11 +406,24 @@ async def paid(m: Message):
     await set_filter(m.from_user.id, 1)
     await m.answer("Фільтр активовано на 24 години!", reply_markup=main_kb)
 
+
+@router.message(F.text == "⚙️ Меню")
+async def menu_btn(m: Message):
+    await m.answer(
+        "Меню:\n"
+        "🔍 Пошук — рандом (безкоштовно)\n"
+        "🧭 Фільтри / ❤️ Флірт — платні\n"
+        "👑 Premium — купити доступ\n"
+        "📣 Реферал — запросити друзів\n"
+        "/help — допомога",
+        reply_markup=main_kb
+    )
+
 @router.message()
 async def relay(m: Message, state: FSMContext):
     if m.text and (m.text.startswith("/") or m.text in [
-        "🔍 Пошук", "🧭 Фільтри пошуку", "❤️ Флірт пошук", "👤 Онлайн", "📚 Пошук за інтересами", "👑 Premium", "📣 Реферал", "⚙️ Додатково", "👤 Профіль", "🔗 Рефералка",
-        "⭐ Купити фільтр (50 Stars)", "❌ Стоп", "❌ Скасувати",
+        "🔍 Пошук", "🧭 Фільтри", "❤️ Флірт", "👤 Онлайн", "📚 Інтереси",
+        "👑 Premium", "📣 Реферал", "⚙️ Меню", "❌ Стоп", "❌ Скасувати",
         "⚠️ Скарга", "🚫 Заблокувати"
     ]):
         return
@@ -440,7 +454,8 @@ async def relay(m: Message, state: FSMContext):
 async def set_commands():
     await bot.set_my_commands([
         BotCommand(command="start", description="Почати"),
-        BotCommand(command="next", description="Рандомний пошук"),
+        BotCommand(command="search", description="Звичайний пошук"),
+        BotCommand(command="sflirt", description="Флірт-пошук"),
         BotCommand(command="stop", description="Зупинити"),
         BotCommand(command="report", description="Скарга"),
         BotCommand(command="help", description="Допомога"),
