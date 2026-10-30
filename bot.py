@@ -153,10 +153,11 @@ gender_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловік")
 looking_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловіка"), KeyboardButton(text="Жінку")], [KeyboardButton(text="Будь-кого")]], resize_keyboard=True)
 
 main_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🎲 Рандом"), KeyboardButton(text="🎯 Пошук за фільтрами")],
-    [KeyboardButton(text="👤 Профіль"), KeyboardButton(text="🔗 Рефералка")],
-    [KeyboardButton(text="⭐ Купити фільтр (50 Stars)")],
-    [KeyboardButton(text="❌ Стоп")]
+    [KeyboardButton(text="🔍 Пошук"), KeyboardButton(text="🧭 Фільтри пошуку")],
+    [KeyboardButton(text="❤️ Флірт пошук"), KeyboardButton(text="👤 Онлайн")],
+    [KeyboardButton(text="📚 Пошук за інтересами")],
+    [KeyboardButton(text="👑 Premium"), KeyboardButton(text="📣 Реферал")],
+    [KeyboardButton(text="⚙️ Додатково"), KeyboardButton(text="❌ Стоп")]
 ], resize_keyboard=True)
 
 stop_kb = ReplyKeyboardMarkup(keyboard=[
@@ -258,12 +259,12 @@ async def help_cmd(m: Message):
 
 # --- Рандом (безкоштовно) ---
 @router.message(Command("next"))
-@router.message(F.text == "🎲 Рандом")
+@router.message(F.text.in_({"🎲 Рандом", "🔍 Пошук"}))
 async def find_random(m: Message, state: FSMContext):
     await do_search(m, state, use_filter=False)
 
 # --- Пошук за фільтрами (платно) ---
-@router.message(F.text == "🎯 Пошук за фільтрами")
+@router.message(F.text.in_({"🎯 Пошук за фільтрами", "🧭 Фільтри пошуку", "❤️ Флірт пошук"}))
 async def find_filter(m: Message, state: FSMContext):
     user = await get_user(m.from_user.id)
     if not user:
@@ -380,13 +381,13 @@ async def profile(m: Message):
         reply_markup=main_kb
     )
 
-@router.message(F.text == "🔗 Рефералка")
+@router.message(F.text.in_({"🔗 Рефералка", "📣 Реферал"}))
 async def ref(m: Message):
     me = await bot.get_me()
     link = f"https://t.me/{me.username}?start={m.from_user.id}"
     await m.answer(f"Посилання:\n{link}\n\nКожен реферал = +1 безкоштовний пошук за фільтрами.", reply_markup=main_kb)
 
-@router.message(F.text == "⭐ Купити фільтр (50 Stars)")
+@router.message(F.text.in_({"⭐ Купити фільтр (50 Stars)", "👑 Premium"}))
 async def buy_filter(m: Message):
     await bot.send_invoice(
         m.chat.id, "Фільтр на 1 день",
@@ -407,7 +408,7 @@ async def paid(m: Message):
 @router.message()
 async def relay(m: Message, state: FSMContext):
     if m.text and (m.text.startswith("/") or m.text in [
-        "🎲 Рандом", "🎯 Пошук за фільтрами", "👤 Профіль", "🔗 Рефералка",
+        "🔍 Пошук", "🧭 Фільтри пошуку", "❤️ Флірт пошук", "👤 Онлайн", "📚 Пошук за інтересами", "👑 Premium", "📣 Реферал", "⚙️ Додатково", "👤 Профіль", "🔗 Рефералка",
         "⭐ Купити фільтр (50 Stars)", "❌ Стоп", "❌ Скасувати",
         "⚠️ Скарга", "🚫 Заблокувати"
     ]):
