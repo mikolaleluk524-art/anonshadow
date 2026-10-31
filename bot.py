@@ -153,11 +153,11 @@ gender_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловік")
 looking_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Чоловіка"), KeyboardButton(text="Жінку")], [KeyboardButton(text="Будь-кого")]], resize_keyboard=True)
 
 main_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="🔍 Пошук"), KeyboardButton(text="🧭 Фільтри")],
-    [KeyboardButton(text="❤️ Флірт"), KeyboardButton(text="👤 Онлайн")],
-    [KeyboardButton(text="📚 Інтереси")],
+    [KeyboardButton(text="🔍 Пошук"), KeyboardButton(text="🧭 Фільтри пошуку")],
+    [KeyboardButton(text="❤️ Флірт пошук"), KeyboardButton(text="👤 Онлайн")],
+    [KeyboardButton(text="📚 Пошук за інтересами")],
     [KeyboardButton(text="👑 Premium"), KeyboardButton(text="📣 Реферал")],
-    [KeyboardButton(text="⚙️ Меню"), KeyboardButton(text="❌ Стоп")]
+    [KeyboardButton(text="⚙️ Додатково")]
 ], resize_keyboard=True)
 
 stop_kb = ReplyKeyboardMarkup(keyboard=[
@@ -265,7 +265,7 @@ async def find_random(m: Message, state: FSMContext):
 
 # --- Фільтри / флірт (платно) ---
 @router.message(Command("sflirt", "sinterests"))
-@router.message(F.text.in_({"🧭 Фільтри", "❤️ Флірт", "📚 Інтереси"}))
+@router.message(F.text.in_({"🧭 Фільтри пошуку", "❤️ Флірт пошук", "📚 Пошук за інтересами"}))
 async def find_filter(m: Message, state: FSMContext):
     user = await get_user(m.from_user.id)
     if not user:
@@ -407,7 +407,7 @@ async def paid(m: Message):
     await m.answer("Фільтр активовано на 24 години!", reply_markup=main_kb)
 
 
-@router.message(F.text == "⚙️ Меню")
+@router.message(F.text == "⚙️ Додатково")
 async def menu_btn(m: Message):
     await m.answer(
         "Меню:\n"
@@ -422,8 +422,8 @@ async def menu_btn(m: Message):
 @router.message()
 async def relay(m: Message, state: FSMContext):
     if m.text and (m.text.startswith("/") or m.text in [
-        "🔍 Пошук", "🧭 Фільтри", "❤️ Флірт", "👤 Онлайн", "📚 Інтереси",
-        "👑 Premium", "📣 Реферал", "⚙️ Меню", "❌ Стоп", "❌ Скасувати",
+        "🔍 Пошук", "🧭 Фільтри пошуку", "❤️ Флірт пошук", "👤 Онлайн", "📚 Пошук за інтересами",
+        "👑 Premium", "📣 Реферал", "⚙️ Додатково", "❌ Стоп", "❌ Скасувати",
         "⚠️ Скарга", "🚫 Заблокувати"
     ]):
         return
